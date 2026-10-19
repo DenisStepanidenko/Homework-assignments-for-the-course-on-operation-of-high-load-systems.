@@ -45,7 +45,128 @@ TIME-WAIT 0      0               127.0.0.1:8080        127.0.0.1:37838
   `connect()` падают с `EADDRNOTAVAIL` / `Cannot assign requested address`.
 - **Вторично:** рост памяти под сокеты, шум в диагностике `ss`.
 
+## Задание 2. Динамическая маршрутизация с BIRD
+### Шаг 1. Создание dummy-интерфейса service_0, service_1, service_2, srv_1
 
+service_0
+```
+sudo ip link add name service_0 type dummy
+sudo ip link set service_0 up
+sudo ip addr add 192.168.14.88/32 dev service_0
+```
+service_1
+```
+sudo ip link add name service_1 type dummy
+sudo ip link set service_1 up
+sudo ip addr add 192.168.14.1/30 dev service_1
+```
+service_2
+```
+sudo ip link add name service_2 type dummy
+sudo ip link set service_2 up
+sudo ip addr add 192.168.10.4/32 dev service_2
+```
+
+srv_1
+```
+sudo ip link add name srv_1 type dummy
+sudo ip link set srv_1 up
+sudo ip addr add 192.168.14.4/32 dev srv_1
+```
+
+Проверка, что ядро видит созданные интерфейсы:
+```
+denich@denich-LOQ-15IRX9:~$ ip route show table local | grep -E 'service_|srv_'
+local 192.168.10.4 dev service_2 proto kernel scope host src 192.168.10.4 
+local 192.168.14.1 dev service_1 proto kernel scope host src 192.168.14.1 
+broadcast 192.168.14.3 dev service_1 proto kernel scope link src 192.168.14.1 
+local 192.168.14.4 dev srv_1 proto kernel scope host src 192.168.14.4 
+local 192.168.14.88 dev service_0 proto kernel scope host src 192.168.14.88 
+```
+
+### Шаг 2. Настройка конфига BIRD
+
+Вставим конфигурацию для задания:
+```
+denich@denich-LOQ-15IRX9:~$ sudo cat /etc/bird/bird.conf
+router id 192.168.14.88;
+
+protocol device {
+    scan time 10;
+}
+
+protocol direct {
+    ipv4;
+    interface "service_*";
+}
+
+protocol kernel {
+    ipv4 { export all; };
+    scan time 20;
+}
+
+filter rip_export {
+    if (net ~ 192.168.14.0/24 && net.len = 32) then accept;
+    reject;
+}
+
+protocol rip {
+    ipv4 {
+        import all;
+        export filter rip_export;
+    };
+    interface "enp7s0" {
+        mode multicast;
+    };
+}
+```
+Проверка:
+
+все компоненты маршрутизации активны
+```
+denich@denich-LOQ-15IRX9:~$ sudo birdc show protocols
+BIRD 2.14 ready.
+Name       Proto      Table      State  Since         Info
+device1    Device     ---        up     21:03:10.514  
+direct1    Direct     ---        up     21:03:10.514  
+kernel1    Kernel     master4    up     21:03:10.514  
+rip1       RIP        master4    up     21:03:10.514
+```
+
+Проверка таблицы BIRD  
+srv_1 отсутствует, так как protocol direct импортирует только service_*.
+```
+denich@denich-LOQ-15IRX9:~$ sudo birdc show route
+BIRD 2.14 ready.
+Table master4:
+192.168.14.0/30      unicast [direct1 21:03:10.515] * (240)
+	dev service_1
+192.168.14.88/32     unicast [direct1 21:03:10.515] * (240)
+	dev service_0
+192.168.10.4/32      unicast [direct1 21:03:10.515] * (240)
+	dev service_2
+```
+
+Проверка экспорта RIP  
+Остальные адреса отсечены фильтром (/30 и чужая подсеть).
+```
+denich@denich-LOQ-15IRX9:~$ sudo birdc show route export rip1
+BIRD 2.14 ready.
+Table master4:
+192.168.14.88/32     unicast [direct1 21:03:10.515] * (240)
+	dev service_0
+```
+### Шаг 3. Доказательство tcpdump
+
+```
+denich@denich-LOQ-15IRX9:~$ sudo tcpdump -ni enp7s0 -v 'udp port 520'
+tcpdump: listening on enp7s0, link-type EN10MB (Ethernet), snapshot length 262144 bytes
+21:23:47.876708 IP (tos 0xc0, ttl 1, id 44923, offset 0, flags [none], proto UDP (17), length 52)
+    192.168.147.54.520 > 224.0.0.9.520: 
+	RIPv2, Response, length: 24, routes: 1 or less
+	  AFI IPv4,   192.168.14.88/32, tag 0x0000, metric: 1, next-hop: self
+```
+В RIP-анонсе присутствует только 192.168.14.88/32 (routes: 1 or less). Лишних адресов нет. Это доказывает, что фильтр работает корректно: service_1 (/30), service_2 (другая подсеть) и srv_1 (имя не service_*) не анонсируются.
 
 
 
