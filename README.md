@@ -168,6 +168,59 @@ tcpdump: listening on enp7s0, link-type EN10MB (Ethernet), snapshot length 26214
 ```
 В RIP-анонсе присутствует только 192.168.14.88/32 (routes: 1 or less). Лишних адресов нет. Это доказывает, что фильтр работает корректно: service_1 (/30), service_2 (другая подсеть) и srv_1 (имя не service_*) не анонсируются.
 
+## Задание 3. Настройка фаервола/ Host Firewalling
+
+### Шаг 1: Настройка iptables
+
+```
+denich@denich-LOQ-15IRX9:~$ sudo iptables -A INPUT -p tcp --dport 8080 -j DROP
+```
+
+Проверка, что правило добавлено:
+```
+denich@denich-LOQ-15IRX9:~$ sudo iptables -L INPUT -n --line-numbers
+Chain INPUT (policy ACCEPT)
+num  target     prot opt source               destination         
+1    DROP       6    --  0.0.0.0/0            0.0.0.0/0            tcp dpt:8080
+```
+
+### Шаг 2: Запуск тестового веб-сервера
+
+```
+denich@denich-LOQ-15IRX9:~$ python3 -m http.server 8080
+Serving HTTP on 0.0.0.0 port 8080 (http://0.0.0.0:8080/) ...
+```
+
+### Шаг 3: Запуск перехвата трафика через tcpdump
+
+```
+denich@denich-LOQ-15IRX9:~$ sudo tcpdump -i any -n port 8080
+tcpdump: data link type LINUX_SLL2
+tcpdump: verbose output suppressed, use -v[v]... for full protocol decode
+listening on any, link-type LINUX_SLL2 (Linux cooked v2), snapshot length 262144 bytes
+```
+### Шаг 4: Проверка работы фаервола
+
+Попробуем при помощи curl подключиться к серверу:
+```
+denich@denich-LOQ-15IRX9:~$ curl --connect-timeout 3 http://127.0.0.1:8080
+curl: (28) Failed to connect to 127.0.0.1 port 8080 after 3002 ms: Timeout was reached
+```
+
+Посмотрим на tcpdump:
+
+```
+denich@denich-LOQ-15IRX9:~$ sudo tcpdump -i any -n port 8080
+tcpdump: data link type LINUX_SLL2
+tcpdump: verbose output suppressed, use -v[v]... for full protocol decode
+listening on any, link-type LINUX_SLL2 (Linux cooked v2), snapshot length 262144 bytes
+22:57:48.613628 lo    In  IP 127.0.0.1.54662 > 127.0.0.1.8080: Flags [S], seq 1122666259, win 65495, options [mss 65495,sackOK,TS val 4167578184 ecr 0,nop,wscale 10], length 0
+22:57:49.661238 lo    In  IP 127.0.0.1.54662 > 127.0.0.1.8080: Flags [S], seq 1122666259, win 65495, options [mss 65495,sackOK,TS val 4167579232 ecr 0,nop,wscale 10], length 0
+22:57:50.685354 lo    In  IP 127.0.0.1.54662 > 127.0.0.1.8080: Flags [S], seq 1122666259, win 65495, options [mss 65495,sackOK,TS val 4167580256 ecr 0,nop,wscale 10], length 0
+```
+
+В выводе tcpdump наблюдались только исходящие SYN-пакеты от клиента.
+Ответные пакеты SYN-ACK от сервера отсутствуют. Это подтверждает, что входящие пакеты на порт 8080 отбрасываются правилом iptables ещё до того, как достигают приложения Python.
 
 
 
