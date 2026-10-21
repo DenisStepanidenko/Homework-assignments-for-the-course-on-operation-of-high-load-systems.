@@ -223,5 +223,131 @@ listening on any, link-type LINUX_SLL2 (Linux cooked v2), snapshot length 262144
 Ответные пакеты SYN-ACK от сервера отсутствуют. Это подтверждает, что входящие пакеты на порт 8080 отбрасываются правилом iptables ещё до того, как достигают приложения Python.
 
 
+## Задание 4. Аппаратное ускорение сетевого трафика (offloading)
+### Шаг 1: Определение имени сетевого интерфейса
 
+```
+denich@denich-LOQ-15IRX9:~$ ip -br link
+lo               UNKNOWN        00:00:00:00:00:00 <LOOPBACK,UP,LOWER_UP> 
+enp7s0           UP             40:c2:ba:92:d0:d6 <BROADCAST,MULTICAST,UP,LOWER_UP> 
+wlp0s20f3        UP             44:a3:bb:6c:b9:93 <BROADCAST,MULTICAST,UP,LOWER_UP> 
+br-2de54b778a04  DOWN           f2:03:7c:c3:c2:35 <NO-CARRIER,BROADCAST,MULTICAST,UP> 
+br-4eee9b5d3bd6  DOWN           d6:31:79:a8:72:b1 <NO-CARRIER,BROADCAST,MULTICAST,UP> 
+br-52d9cd9e3c1f  DOWN           7e:89:2e:52:37:45 <NO-CARRIER,BROADCAST,MULTICAST,UP> 
+docker0          DOWN           92:c3:e2:40:2c:7c <NO-CARRIER,BROADCAST,MULTICAST,UP>
+```
+Основной проводной интерфейс — enp7s0.
+
+### Шаг 2: Информация о драйвере адаптера
+```
+denich@denich-LOQ-15IRX9:~$ ethtool -i enp7s0
+driver: r8169
+version: 7.0.0-38-generic
+firmware-version: rtl8168h-2_0.0.2 02/26/15
+expansion-rom-version: 
+bus-info: 0000:07:00.0
+supports-statistics: yes
+supports-test: no
+supports-eeprom-access: no
+supports-register-dump: yes
+supports-priv-flags: no
+```
+Адаптер работает на драйвере r8169, PCI-адрес 0000:07:00.0
+
+### Шаг 3: Исследование offload-возможностей адаптера
+
+```
+denich@denich-LOQ-15IRX9:~$ ethtool -k enp7s0
+Features for enp7s0:
+rx-checksumming: on
+tx-checksumming: on
+	tx-checksum-ipv4: on
+	tx-checksum-ip-generic: off [fixed]
+	tx-checksum-ipv6: on
+	tx-checksum-fcoe-crc: off [fixed]
+	tx-checksum-sctp: off [fixed]
+scatter-gather: on
+	tx-scatter-gather: on
+	tx-scatter-gather-fraglist: off [fixed]
+tcp-segmentation-offload: on
+	tx-tcp-segmentation: on
+	tx-tcp-ecn-segmentation: off [fixed]
+	tx-tcp-mangleid-segmentation: off
+	tx-tcp6-segmentation: on
+	tx-tcp-accecn-segmentation: off [fixed]
+generic-segmentation-offload: on
+generic-receive-offload: on
+large-receive-offload: off [fixed]
+rx-vlan-offload: on
+tx-vlan-offload: on
+ntuple-filters: off [fixed]
+receive-hashing: off [fixed]
+highdma: on [fixed]
+rx-vlan-filter: off [fixed]
+vlan-challenged: off [fixed]
+tx-gso-robust: off [fixed]
+tx-fcoe-segmentation: off [fixed]
+tx-gre-segmentation: off [fixed]
+tx-gre-csum-segmentation: off [fixed]
+tx-ipxip4-segmentation: off [fixed]
+tx-ipxip6-segmentation: off [fixed]
+tx-udp_tnl-segmentation: off [fixed]
+tx-udp_tnl-csum-segmentation: off [fixed]
+tx-gso-partial: off [fixed]
+tx-tunnel-remcsum-segmentation: off [fixed]
+tx-sctp-segmentation: off [fixed]
+tx-esp-segmentation: off [fixed]
+tx-udp-segmentation: off [fixed]
+tx-gso-list: off [fixed]
+tx-nocache-copy: off
+loopback: off [fixed]
+rx-fcs: off
+rx-all: off
+tx-vlan-stag-hw-insert: off [fixed]
+rx-vlan-stag-hw-parse: off [fixed]
+rx-vlan-stag-hw-filter: off [fixed]
+l2-fwd-offload: off [fixed]
+hw-tc-offload: off [fixed]
+esp-hw-offload: off [fixed]
+esp-tx-csum-hw-offload: off [fixed]
+rx-udp_tunnel-port-offload: off [fixed]
+tls-hw-tx-offload: off [fixed]
+tls-hw-rx-offload: off [fixed]
+rx-gro-hw: off [fixed]
+tls-hw-record: off [fixed]
+rx-gro-list: off
+macsec-hw-offload: off [fixed]
+rx-udp-gro-forwarding: off
+hsr-tag-ins-offload: off [fixed]
+hsr-tag-rm-offload: off [fixed]
+hsr-fwd-offload: off [fixed]
+hsr-dup-offload: off [fixed]
+```
+
+
+Ключевые включённые функции offload:
+| Функция | Статус | Назначение |
+|---|---|---|
+| rx-checksumming | on | Проверка контрольных сумм при приёме на NIC |
+| tx-checksumming | on | Вычисление контрольных сумм при отправке на NIC |
+| tx-checksum-ipv4 / -ipv6 | on | Checksum offload для IPv4/IPv6 |
+| scatter-gather (tx-scatter-gather) | on | Сборка пакета из разрозненных буферов памяти без копирования |
+| tcp-segmentation-offload | on | TSO — сегментация TCP на NIC |
+| generic-segmentation-offload | on | GSO — программная сегментация в стеке |
+| generic-receive-offload | on | GRO — объединение входящих пакетов |
+| rx-vlan-offload / tx-vlan-offload | on | Обработка VLAN-тегов на NIC |
+
+### Шаг 4: Проверка статуса TCP Segmentation Offload
+
+```
+denich@denich-LOQ-15IRX9:~$ ethtool -k enp7s0 | grep -i tcp-segmentation
+tcp-segmentation-offload: on
+	tx-tcp-segmentation: on
+```
+
+TCP Segmentation Offload включён, в том числе для TCP over IPv4 . Дополнительно включён TSO для IPv6 (tx-tcp6-segmentation: on).
+
+### Шаг 5: Задача, которую решает TCP Segmentation Offload
+
+TSO позволяет ОС передать сетевой карте один большой TCP-сегмент, а карта сама нарезает его на пакеты размером MTU. Это убирает с CPU рутинную работу по сегментации, повышая пропускную способность и снижая загрузку процессора при интенсивной отправке данных.
 
