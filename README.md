@@ -351,3 +351,59 @@ TCP Segmentation Offload включён, в том числе для TCP over IP
 
 TSO позволяет ОС передать сетевой карте один большой TCP-сегмент, а карта сама нарезает его на пакеты размером MTU. Это убирает с CPU рутинную работу по сегментации, повышая пропускную способность и снижая загрузку процессора при интенсивной отправке данных.
 
+
+# Домашнее задание 2. WEB. Балансировка нагрузки
+## Задание 1. Создание Server Pool для backend 
+
+### Шаг 1. Создать две папки в home dir.
+```
+denich@denich-LOQ-15IRX9:/home$ mkdir -p ~/backend1 ~/backend2
+```
+
+### Шаг 2. Наполнить папки содержимым.
+
+```
+denich@denich-LOQ-15IRX9:~$ echo '<h1>Response from Backend Server 1</h1>' > ~/backend1/index.html
+denich@denich-LOQ-15IRX9:~$ echo '<h2>*** Response from Backend Server 2 ***</h2>' > ~/backend2/index.html
+```
+
+Проверим:
+```
+denich@denich-LOQ-15IRX9:~$ cat ~/backend1/index.html
+<h1>Response from Backend Server 1</h1>
+denich@denich-LOQ-15IRX9:~$ cat ~/backend2/index.html
+<h2>*** Response from Backend Server 2 ***</h2>
+```
+
+### Шаг 3. Запустить серверы.
+
+```
+denich@denich-LOQ-15IRX9:~$ cd ~/backend1 && python3 -m http.server 8081 > /tmp/backend1.log 2>&1 &
+[1] 20238
+denich@denich-LOQ-15IRX9:~$ cd ~/backend2 && python3 -m http.server 8082 > /tmp/backend2.log 2>&1 &
+[2] 20240
+```
+
+Проверим, что оба слушают порты:
+
+```
+denich@denich-LOQ-15IRX9:~$ ss -lntp | grep -E '8081|8082'
+LISTEN 0      5                 0.0.0.0:8082       0.0.0.0:*    users:(("python3",pid=20241,fd=3))    
+LISTEN 0      5                 0.0.0.0:8081       0.0.0.0:*    users:(("python3",pid=20239,fd=3))
+```
+
+### Шаг 4. Проверим, что каждый отдаёт свой index.html:
+
+```
+denich@denich-LOQ-15IRX9:~$ curl -s http://127.0.0.1:8081
+<h1>Response from Backend Server 1</h1>
+denich@denich-LOQ-15IRX9:~$ curl -s http://127.0.0.1:8082
+<h2>*** Response from Backend Server 2 ***</h2>
+```
+
+
+
+
+
+
+
