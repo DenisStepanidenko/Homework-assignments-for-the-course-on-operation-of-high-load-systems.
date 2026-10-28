@@ -615,6 +615,90 @@ TCP  denich-LOQ-15IRX9:http             13       84       78     5460     7141
 ```
 Счётчики подтверждают балансировку: из 13 соединений 6 ушли на 127.0.0.1:8081 и 7 — на 127.0.0.1:8082. Распределение практически равномерное (6/7), что соответствует алгоритму round-robin. Ненулевые InPkts/OutPkts у обоих бэкендов доказывают, что трафик реально прошёл через оба сервера.
 
+## Задание 4. Балансировка L7 с помощью NGINX
+
+### Шаг 1. Создать конфиг nginx
+
+```
+denich@denich-LOQ-15IRX9:~$ cat /etc/nginx/sites-available/highload
+server {
+    listen 127.0.0.1:8888;
+    server_name _;
+
+    location / {
+        proxy_pass http://backend_pool;
+        proxy_set_header X-high-load-test 123;
+        proxy_set_header Host $host;
+        proxy_next_upstream off;
+    }
+}
+
+upstream backend_pool {
+    zone backend_pool 64k;
+    server 127.0.0.1:8081 max_fails=7 fail_timeout=30s;
+    server 127.0.0.1:8082 backup;
+}
+```
+nginx слушает только 127.0.0.1:8888. zone backend_pool 64k делает счётчик max_fails общим для всех worker-процессов. max_fails=7 fail_timeout=30s — активный сервер исключается после 7 неудач на 30 секунд. backup — резервный сервер. proxy_next_upstream off запрещает переключение на backup в рамках одного запроса — поэтому клиент видит 502, пока не накопятся 7 неудач. proxy_set_header X-high-load-test 123 добавляет заголовок к запросу в апстрим.
+
+### Шаг 2. Активировать sites и проверить синтаксис
+
+```
+denich@denich-LOQ-15IRX9:~$ sudo ln -s /etc/nginx/sites-available/highload /etc/nginx/sites-enabled/highload
+denich@denich-LOQ-15IRX9:~$ sudo rm /etc/nginx/sites-enabled/default
+denich@denich-LOQ-15IRX9:~$ sudo nginx -t && sudo systemctl restart nginx
+nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
+nginx: configuration file /etc/nginx/nginx.conf test is successful
+```
+Стандартный сайт default удалён, чтобы nginx не слушал порт 80 — по заданию он должен слушать только 127.0.0.1:8888. nginx -t подтверждает синтаксис, restart применяет конфиг.
+
+### Шаг 3. Проверка, что nginx слушает только 127.0.0.1:8888
+
+```
+denich@denich-LOQ-15IRX9:~$ sudo ss -lntp 'sport = :80 or sport = :8888'
+State    Recv-Q   Send-Q   Local Address:Port   Peer Address:Port   Process
+LISTEN   0        511      127.0.0.1:8888       0.0.0.0:*           users:(("nginx",pid=15228,fd=5),...)
+```
+
+### Шаг 4. Запуск бэкендов
+
+```
+denich@denich-LOQ-15IRX9:~$ cd ~/backend2 && python3 -m http.server 8082 > /tmp/backend2.log 2>&1 &
+denich@denich-LOQ-15IRX9:~$ ss -lntp | grep -E "8081|8082"
+LISTEN 0      5      0.0.0.0:8082      0.0.0.0:*    users:(("python3",pid=15250,fd=3))
+```
+
+### Шаг 5. Демонстрация переключения после 7 ответов 500
+
+```
+denich@denich-LOQ-15IRX9:~$ for i in {1..9}; do echo -n "$i: "; curl -s -o /dev/null -w "%{http_code}\n" "http://127.0.0.1:8888/?test=$i"; done
+1: 502
+2: 502
+3: 502
+4: 502
+5: 502
+6: 502
+7: 502
+8: 200
+9: 200
+```
+
+первые 7 запросов вернули 502 Bad Gateway — nginx пытался подключиться к 8081, получал connection refused и, из-за proxy_next_upstream off, не переключался на backup в рамках запроса. После 7-й неудачи (max_fails=7) сервер 8081 был помечен как недоступный на fail_timeout=30s, и запросы 8–9 ушли на backup 8082, вернув 200
+
+### Шаг 6. Проверка ответа от backup-сервера
+```
+denich@denich-LOQ-15IRX9:~$ curl http://127.0.0.1:8888/
+<h2>*** Response from Backend Server 2 ***</h2>
+```
+
+### Шаг 7. Демонстрация заголовка X-high-load-test через tshark
+
+```
+denich@denich-LOQ-15IRX9:~$ sudo tshark -i lo -f "tcp port 8082" -Y "http.request" -T fields -e http.request.line
+Capturing on 'Loopback: lo'
+X-high-load-test: 123\r\n,Host: backend_pool\r\n,Connection: close\r\n,User-Agent: curl/8.5.0\r\n,Accept: */*\r\n
+```
+tshark перехватил HTTP-запросы, которые nginx отправил на backup-сервер 127.0.0.1:8082. В заголовках присутствует X-high-load-test: 123 — nginx проставляет кастомный заголовок при проксировании в апстрим. Заголовок Connection: close — стандартное поведение nginx при работе с upstream по HTTP/1.0, на балансировку не влияет.
 
 
 
