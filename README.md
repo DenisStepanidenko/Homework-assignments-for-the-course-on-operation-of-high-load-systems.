@@ -401,6 +401,128 @@ denich@denich-LOQ-15IRX9:~$ curl -s http://127.0.0.1:8082
 <h2>*** Response from Backend Server 2 ***</h2>
 ```
 
+## Задание 2. DNS Load Balancing с помощью dnsmasq
+
+### Шаг 1. Настроить конфиг dnsmasq.
+```
+sudo nano /etc/dnsmasq.d/highload.conf
+```
+
+Вставим в конфиг
+```
+listen-address=127.0.0.1
+bind-interfaces
+
+host-record=my-awesome-highload-app.local,127.0.0.1
+host-record=my-awesome-highload-app.local,127.0.0.2
+
+no-resolv
+```
+
+Проверим, что конфиг записался
+
+```
+denich@denich-LOQ-15IRX9:~$ cat /etc/dnsmasq.d/highload.conf
+listen-address=127.0.0.1
+bind-interfaces
+
+host-record=my-awesome-highload-app.local,127.0.0.1
+host-record=my-awesome-highload-app.local,127.0.0.2
+
+no-resolv
+
+```
+
+### Шаг 2. Перезапустить dnsmasq
+
+```
+denich@denich-LOQ-15IRX9:~$ sudo systemctl restart dnsmasq
+```
+
+### Шаг 3. Проверить порт 53 для DNS
+
+```
+denich@denich-LOQ-15IRX9:~$ sudo ss -lntup | grep '127.0.0.1:53'
+udp   UNCONN 0      0          127.0.0.1:53         0.0.0.0:*    users:(("dnsmasq",pid=9499,fd=4))                                                                                                                                                                
+tcp   LISTEN 0      32         127.0.0.1:53         0.0.0.0:*    users:(("dnsmasq",pid=9499,fd=5))     
+```
+dnsmasq (PID 9499) слушает 127.0.0.1:53 по UDP и TCP
+
+### Шаг 4. Спросить DNS (backend2 пока работает)
+
+```
+denich@denich-LOQ-15IRX9:~$ dig @127.0.0.1 my-awesome-highload-app.local A  
+
+; <<>> DiG 9.18.39-0ubuntu0.24.04.8-Ubuntu <<>> @127.0.0.1 my-awesome-highload-app.local A
+; (1 server found)
+;; global options: +cmd
+;; Got answer:
+;; WARNING: .local is reserved for Multicast DNS
+;; You are currently testing what happens when an mDNS query is leaked to DNS
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 49972
+;; flags: qr aa rd ra; QUERY: 1, ANSWER: 2, AUTHORITY: 0, ADDITIONAL: 1
+
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 1232
+;; QUESTION SECTION:
+;my-awesome-highload-app.local.	IN	A
+
+;; ANSWER SECTION:
+my-awesome-highload-app.local. 0 IN	A	127.0.0.1
+my-awesome-highload-app.local. 0 IN	A	127.0.0.2
+
+;; Query time: 0 msec
+;; SERVER: 127.0.0.1#53(127.0.0.1) (UDP)
+;; WHEN: Wed Oct 28 20:07:39 MSK 2026
+;; MSG SIZE  rcvd: 90
+```
+
+ANSWER: 2 — обе A-записи на месте. SERVER: 127.0.0.1#53 — ответил наш dnsmasq
+
+### Шаг 5. Остановить backend2
+
+```
+denich@denich-LOQ-15IRX9:~$ pkill -f "http.server 8082"
+```
+
+### Шаг 6. Снова спросить DNS после отключения backend2
+
+```
+denich@denich-LOQ-15IRX9:~$ dig @127.0.0.1 my-awesome-highload-app.local A  
+
+; <<>> DiG 9.18.39-0ubuntu0.24.04.8-Ubuntu <<>> @127.0.0.1 my-awesome-highload-app.local A
+; (1 server found)
+;; global options: +cmd
+;; Got answer:
+;; WARNING: .local is reserved for Multicast DNS
+;; You are currently testing what happens when an mDNS query is leaked to DNS
+;; ->>HEADER<<- opcode: QUERY, status: NOERROR, id: 19016
+;; flags: qr aa rd ra; QUERY: 1, ANSWER: 2, AUTHORITY: 0, ADDITIONAL: 1
+
+;; OPT PSEUDOSECTION:
+; EDNS: version: 0, flags:; udp: 1232
+;; QUESTION SECTION:
+;my-awesome-highload-app.local.	IN	A
+
+;; ANSWER SECTION:
+my-awesome-highload-app.local. 0 IN	A	127.0.0.2
+my-awesome-highload-app.local. 0 IN	A	127.0.0.1
+
+;; Query time: 0 msec
+;; SERVER: 127.0.0.1#53(127.0.0.1) (UDP)
+;; WHEN: Wed Oct 28 20:11:18 MSK 2026
+;; MSG SIZE  rcvd: 90
+```
+
+Проверка:
+
+```denich@denich-LOQ-15IRX9:~$ curl -s --connect-timeout 2 http://127.0.0.2:8082 || echo "connection failed"
+connection failed
+```
+
+Вывод: обе записи по-прежнему в ответе — dnsmasq не проверяет живость сервисов. Клиент, попавший на 127.0.0.2, получит connection refused. Вывод: DNS-балансировка распределяет запросы, но не даёт отказоустойчивости без health-check.
+
+
 
 
 
