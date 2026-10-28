@@ -524,6 +524,97 @@ connection failed
 Обе записи по-прежнему в ответе — dnsmasq не проверяет живость сервисов. Клиент, попавший на 127.0.0.2, получит connection refused. Вывод: DNS-балансировка распределяет запросы, но не даёт отказоустойчивости без health-check.
 
 
+## Задание 3. Балансировка Layer 4 с  с помощью IPVS
+
+### Шаг 1. Создать dummy-интерфейс
+
+```
+denich@denich-LOQ-15IRX9:~$ sudo ip link add name dummy1 type dummy
+[sudo] password for denich: 
+denich@denich-LOQ-15IRX9:~$ sudo ip link set dummy1 up
+denich@denich-LOQ-15IRX9:~$ sudo ip addr add 192.168.100.1/32 dev dummy1
+```
+Проверка:
+
+```
+denich@denich-LOQ-15IRX9:~$ ip addr show dummy1
+8: dummy1: <BROADCAST,NOARP,UP,LOWER_UP> mtu 1500 qdisc noqueue state UNKNOWN group default qlen 1000
+    link/ether 2a:d9:e1:d0:66:28 brd ff:ff:ff:ff:ff:ff
+    inet 192.168.100.1/32 scope global dummy1
+       valid_lft forever preferred_lft forever
+    inet6 fe80::28d9:e1ff:fed0:6628/64 scope link 
+       valid_lft forever preferred_lft forever
+```
+
+VIP 192.168.100.1/32 успешно назначен на dummy1
+
+### Шаг 2. Настроить IPVS
+
+```
+denich@denich-LOQ-15IRX9:~$ sudo ipvsadm -A -t 192.168.100.1:80 -s rr
+denich@denich-LOQ-15IRX9:~$ sudo ipvsadm -a -t 192.168.100.1:80 -r 127.0.0.1:8081 -m
+denich@denich-LOQ-15IRX9:~$ sudo ipvsadm -a -t 192.168.100.1:80 -r 127.0.0.1:8082 -m
+```
+
+Проверка конфигурации:
+
+```
+denich@denich-LOQ-15IRX9:~$ sudo ipvsadm -Ln
+IP Virtual Server version 1.2.1 (size=4096)
+Prot LocalAddress:Port Scheduler Flags
+  -> RemoteAddress:Port           Forward Weight ActiveConn InActConn
+TCP  192.168.100.1:80 rr
+  -> 127.0.0.1:8081               Masq    1      0          0         
+  -> 127.0.0.1:8082               Masq    1      0          0
+```
+
+Создан виртуальный сервер 192.168.100.1:80 с планировщиком rr и два реальных сервера. Режим Masq (NAT) выбран, потому что бэкенды на 127.0.0.1 — IPVS переписывает адрес назначения и отправляет пакеты локально. Вес у обоих 1, то есть нагрузка делится поровну.
+
+### Шаш 3. Демонстрация балансировки через curl
+
+```
+denich@denich-LOQ-15IRX9:~$ curl -s http://192.168.100.1
+<h2>*** Response from Backend Server 2 ***</h2>
+denich@denich-LOQ-15IRX9:~$ curl -s http://192.168.100.1
+<h1>Response from Backend Server 1</h1>
+denich@denich-LOQ-15IRX9:~$ curl -s http://192.168.100.1
+<h2>*** Response from Backend Server 2 ***</h2>
+denich@denich-LOQ-15IRX9:~$ curl -s http://192.168.100.1
+<h1>Response from Backend Server 1</h1>
+denich@denich-LOQ-15IRX9:~$ curl -s http://192.168.100.1
+<h2>*** Response from Backend Server 2 ***</h2>
+denich@denich-LOQ-15IRX9:~$ curl -s http://192.168.100.1
+<h1>Response from Backend Server 1</h1>
+denich@denich-LOQ-15IRX9:~$ curl -s http://192.168.100.1
+<h2>*** Response from Backend Server 2 ***</h2>
+denich@denich-LOQ-15IRX9:~$ curl -s http://192.168.100.1
+<h1>Response from Backend Server 1</h1>
+denich@denich-LOQ-15IRX9:~$ curl -s http://192.168.100.1
+<h2>*** Response from Backend Server 2 ***</h2>
+denich@denich-LOQ-15IRX9:~$ curl -s http://192.168.100.1
+<h1>Response from Backend Server 1</h1>
+denich@denich-LOQ-15IRX9:~$ curl -s http://192.168.100.1
+<h2>*** Response from Backend Server 2 ***</h2>
+denich@denich-LOQ-15IRX9:~$ curl -s http://192.168.100.1
+<h1>Response from Backend Server 1</h1>
+denich@denich-LOQ-15IRX9:~$ curl -s http://192.168.100.1
+```
+
+ответы строго чередуются — Backend 2, Backend 1, Backend 2, Backend 1… Это наглядная демонстрация round-robin
+
+### Шаг 4. Демонстрация счётчиков IPVS
+
+```
+denich@denich-LOQ-15IRX9:~$ sudo ipvsadm -L --stats
+IP Virtual Server version 1.2.1 (size=4096)
+Prot LocalAddress:Port               Conns   InPkts  OutPkts  InBytes OutBytes
+  -> RemoteAddress:Port
+TCP  denich-LOQ-15IRX9:http             13       84       78     5460     7141
+  -> localhost:tproxy                    6       39       36     2532     3270
+  -> localhost:8082                      7       45       42     2928     3871
+```
+Счётчики подтверждают балансировку: из 13 соединений 6 ушли на 127.0.0.1:8081 и 7 — на 127.0.0.1:8082. Распределение практически равномерное (6/7), что соответствует алгоритму round-robin. Ненулевые InPkts/OutPkts у обоих бэкендов доказывают, что трафик реально прошёл через оба сервера.
+
 
 
 
