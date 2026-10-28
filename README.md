@@ -516,7 +516,8 @@ my-awesome-highload-app.local. 0 IN	A	127.0.0.1
 
 Проверка:
 
-```denich@denich-LOQ-15IRX9:~$ curl -s --connect-timeout 2 http://127.0.0.2:8082 || echo "connection failed"
+```
+denich@denich-LOQ-15IRX9:~$ curl -s --connect-timeout 2 http://127.0.0.2:8082 || echo "connection failed"
 connection failed
 ```
 
