@@ -836,6 +836,152 @@ cat закрывает дескриптор 3 (/etc/os-release), затем 1 (s
 2) write(1, ...) — это запись в stdout. Поскольку stdout перенаправлен в /dev/null, данные никуда не сохраняются. Это не запись в файл в смысле изменения данных на диске.
 
 
+## Задание 3. LVM Management.
+
+Задание выполнялось на физической машине, а не в виртуальной среде, поэтому добавление второго физического диска /dev/sdb невозможно. Для имитации нового диска создан файл-образ размером 2 ГБ и подключён как loop-устройство.
+
+### Шаг 1. Создание "диска" и раздела
+
+```
+denich@denich-LOQ-15IRX9:~$ dd if=/dev/zero of=~/fake_disk.img bs=1M count=2048
+2048+0 records in
+2048+0 records out
+2147483648 bytes (2.1 GB, 2.0 GiB) copied, 0.432778 s, 5.0 GB/s
+denich@denich-LOQ-15IRX9:~$ sudo losetup -fP ~/fake_disk.img
+denich@denich-LOQ-15IRX9:~$ lsblk | grep loop35
+loop35        7:35   0     2G  0 loop
+```
+
+dd создаёт файл fake_disk.img размером 2 ГБ. losetup -fP подключает его как loop-устройство и просит ядро просканировать таблицу разделов. Устройство получило имя /dev/loop35, размер 2G — аналог /dev/sdb из задания.
+
+Создан раздел через fdisk:
+
+```
+denich@denich-LOQ-15IRX9:~$ sudo fdisk /dev/loop35
+...
+Command (m for help): n
+Partition type
+   p   primary (0 primary, 0 extended, 4 free)
+Select (default p): p
+Partition number (1-4, default 1): 1
+First sector (2048-4194303, default 2048): 
+Last sector ... (default 4194303): 
+Created a new partition 1 of type 'Linux' and of size 2 GiB.
+
+Command (m for help): t
+Selected partition 1
+Hex code or alias (type L to list all): 8e
+Changed type of partition 'Linux' to 'Linux LVM'.
+
+Command (m for help): w
+The partition table has been altered.
+denich@denich-LOQ-15IRX9:~$ sudo partprobe /dev/loop35
+denich@denich-LOQ-15IRX9:~$ lsblk /dev/loop35
+NAME       MAJ:MIN RM SIZE RO TYPE MOUNTPOINTS
+loop35       7:35   0   2G  0 loop 
+└─loop35p1 259:7    0   2G  0 part
+```
+
+Cоздан первичный раздел /dev/loop35p1 на весь диск, тип изменён на 8e (Linux LVM). partprobe обновляет таблицу разделов в ядре без перезагрузки.
+
+### Шаг 2. Создание Physical Volume.
+
+```
+denich@denich-LOQ-15IRX9:~$ sudo pvcreate /dev/loop35p1
+  Physical volume "/dev/loop35p1" successfully created.
+denich@denich-LOQ-15IRX9:~$ sudo pvs
+  PV            VG Fmt  Attr PSize  PFree 
+  /dev/loop35p1    lvm2 ---  <2.00g <2.00g
+```
+
+pvcreate помечает раздел как физический том LVM. pvs подтверждает создание: размер <2.00g, свободно <2.00g
+
+
+### Шаг 3. Создание Volume Group
+
+```
+denich@denich-LOQ-15IRX9:~$ sudo vgcreate vg_highload /dev/loop35p1
+  Volume group "vg_highload" successfully created.
+denich@denich-LOQ-15IRX9:~$ sudo vgs
+  VG          #PV #LV #SN Attr   VSize  VFree 
+  vg_highload   1   0   0 wz--n- <2.00g <2.00g
+```
+
+vgcreate объединяет PV в пул хранения vg_highload. vgs показывает: 1 PV, 0 LV, размер <2.00g, свободно <2.00g
+
+
+### Шаг 4. Создание Logical Volume
+
+```
+denich@denich-LOQ-15IRX9:~$ sudo lvcreate -L 1200M -n data_lv vg_highload
+  Logical volume "data_lv" created.
+denich@denich-LOQ-15IRX9:~$ sudo lvcreate -l 100%FREE -n logs_lv vg_highload
+  Logical volume "logs_lv" created.
+denich@denich-LOQ-15IRX9:~$ sudo lvs
+  LV      VG          Attr       LSize   Pool Origin Data%  Meta%  Move Log Cpy%Sync Convert
+  data_lv vg_highload -wi-a-----   1.17g                                                    
+  logs_lv vg_highload -wi-a----- 844.00m
+```
+
+data_lv создан размером 1200 MiB (LVM отображает как 1.17g). logs_lv создан с -l 100%FREE — забрал всё оставшееся место (844.00m). Сумма 1.17g + 844m ≈ 2G — весь объём VG распределён
+
+### Шаг 5. Форматирование и монтирование data_lv
+
+```
+denich@denich-LOQ-15IRX9:~$ sudo mkfs.ext4 /dev/vg_highload/data_lv
+mke2fs 1.47.0 (5-Feb-2023)
+Creating filesystem with 307200 4k blocks and 76800 inodes
+Filesystem UUID: c9c9a7ab-99e6-41a5-a044-35125eb068a8
+...
+denich@denich-LOQ-15IRX9:~$ sudo mkdir -p /mnt/app_data
+denich@denich-LOQ-15IRX9:~$ sudo mount /dev/vg_highload/data_lv /mnt/app_data
+denich@denich-LOQ-15IRX9:~$ df -h /mnt/app_data
+Filesystem                       Size  Used Avail Use% Mounted on
+/dev/mapper/vg_highload-data_lv  1.2G   24K  1.1G   1% /mnt/app_data
+```
+
+mkfs.ext4 создаёт файловую систему ext4 на data_lv. Том примонтирован в /mnt/app_data, доступно 1.1G из 1.2G
+
+### Шаг 6. Форматирование и монтирование logs_lv
+
+```
+denich@denich-LOQ-15IRX9:~$ sudo apt install -y xfsprogs
+...
+denich@denich-LOQ-15IRX9:~$ sudo mkfs.xfs /dev/vg_highload/logs_lv
+meta-data=/dev/vg_highload/logs_lv isize=512    agcount=4, agsize=54016 blks
+...
+data     =                       bsize=4096   blocks=216064, imaxpct=25
+...
+denich@denich-LOQ-15IRX9:~$ sudo mkdir -p /mnt/app_logs
+denich@denich-LOQ-15IRX9:~$ sudo mount /dev/vg_highload/logs_lv /mnt/app_logs
+denich@denich-LOQ-15IRX9:~$ df -h /mnt/app_logs
+Filesystem                       Size  Used Avail Use% Mounted on
+/dev/mapper/vg_highload-logs_lv  780M   48M  733M   7% /mnt/app_logs
+```
+
+
+установлен пакет xfsprogs (утилиты XFS). mkfs.xfs создаёт XFS на logs_lv. Том примонтирован в /mnt/app_logs, доступно 733M из 780M
+
+### Шаг 7. Финальная проверка
+
+```
+denich@denich-LOQ-15IRX9:~$ df -hT /mnt/app_data /mnt/app_logs
+Filesystem                      Type  Size  Used Avail Use% Mounted on
+/dev/mapper/vg_highload-data_lv ext4  1.2G   24K  1.1G   1% /mnt/app_data
+/dev/mapper/vg_highload-logs_lv xfs   780M   48M  733M   7% /mnt/app_logs
+denich@denich-LOQ-15IRX9:~$ lsblk /dev/loop35
+NAME                    MAJ:MIN RM  SIZE RO TYPE MOUNTPOINTS
+loop35                    7:35   0    2G  0 loop 
+└─loop35p1              259:7    0    2G  0 part 
+  ├─vg_highload-data_lv 252:0    0  1.2G  0 lvm  /mnt/app_data
+  └─vg_highload-logs_lv 252:1    0  844M  0 lvm  /mnt/app_logs
+```
+
+df -hT подтверждает типы файловых систем: ext4 для /mnt/app_data и xfs для /mnt/app_logs. lsblk показывает полную цепочку: файл-образ loop35 → раздел loop35p1 → LVM-тома data_lv и logs_lv, оба примонтированы в нужные точки
+
+
+
+
 
 
 
