@@ -980,6 +980,67 @@ loop35                    7:35   0    2G  0 loop
 df -hT подтверждает типы файловых систем: ext4 для /mnt/app_data и xfs для /mnt/app_logs. lsblk показывает полную цепочку: файл-образ loop35 → раздел loop35p1 → LVM-тома data_lv и logs_lv, оба примонтированы в нужные точки
 
 
+## Задание 4. Использование pseudo filesystem
+
+### Шаг 1. Модель CPU из /proc
+
+```
+denich@denich-LOQ-15IRX9:~$ grep "model name" /proc/cpuinfo | head -1
+model name	: 13th Gen Intel(R) Core(TM) i7-13650HX
+```
+
+/proc/cpuinfo — виртуальный файл, который ядро генерирует при чтении. Поле model name содержит модель процессора: 13th Gen Intel(R) Core(TM) i7-13650HX. head -1 оставлен, потому что cpuinfo содержит блок информации для каждого логического ядра — первая строка соответствует первому ядру
+
+### Шаг 2. Объём памяти (KiB) из /proc
+
+```
+denich@denich-LOQ-15IRX9:~$ grep MemTotal /proc/meminfo
+MemTotal:       24302132 kB
+```
+
+/proc/meminfo — виртуальный файл с информацией о памяти. MemTotal — общий объём доступной RAM: 24 302 132 KiB (≈ 23.2 GiB)
+
+
+### Шаг 3. PPid текущего shell через /proc/$$/status
+
+```
+denich@denich-LOQ-15IRX9:~$ grep PPid /proc/$$/status
+PPid:	17324
+```
+
+$$ — специальная переменная bash, содержащая PID текущего shell (процесса, в котором выполняется команда). /proc/$$/status — виртуальный файл с информацией об этом процессе. Поле PPid — Parent Process ID, то есть PID родительского процесса (терминала или SSH-сессии), который запустил shell: 17324
+$$: это PID текущего экземпляра shell. При каждом новом запуске bash (новый терминал, новая сессия) $$ меняется. В отличие от $! или $?, $$ всегда указывает на сам shell
+
+### Шаг 4. I/O scheduler для основного диска
+
+```
+denich@denich-LOQ-15IRX9:~$ cat /sys/block/sda/queue/scheduler
+cat: /sys/block/sda/queue/scheduler: No such file or directory
+denich@denich-LOQ-15IRX9:~$ cat /sys/block/nvme0n1/queue/scheduler
+[none] mq-deadline
+```
+
+в системе нет диска /dev/sda — основной накопитель это NVMe (nvme0n1). Для NVMe файл планировщика находится по пути /sys/block/nvme0n1/queue/scheduler. Активный планировщик заключён в квадратные скобки: [none], доступен также mq-deadline
+
+### Шаг 5. MTU основного сетевого интерфейса
+
+```
+denich@denich-LOQ-15IRX9:~$ ip -br link
+lo               UNKNOWN        00:00:00:00:00:00 <LOOPBACK,UP,LOWER_UP>
+enp7s0           UP             40:c2:ba:92:d0:d6 <BROADCAST,MULTICAST,UP,LOWER_UP>
+wlp0s20f3        UP             44:a3:bb:6c:b9:93 <BROADCAST,MULTICAST,UP,LOWER_UP>
+docker0          DOWN           2e:d4:2b:2c:35:8a <NO-CARRIER,BROADCAST,MULTICAST,UP>
+br-2de54b778a04  DOWN           32:7f:30:8b:78:d5 <NO-CARRIER,BROADCAST,MULTICAST,UP>
+br-4eee9b5d3bd6  DOWN           0e:9d:38:69:26:ed <NO-CARRIER,BROADCAST,MULTICAST,UP>
+br-52d9cd9e3c1f  DOWN           36:bf:54:26:fd:dd <NO-CARRIER,BROADCAST,MULTICAST,UP>
+denich@denich-LOQ-15IRX9:~$ ip link show enp7s0 | grep mtu
+2: enp7s0: <BROADCAST,MULTICAST,UP,LOWER_UP> mtu 1500 qdisc fq_codel state UP mode DEFAULT group default qlen 1000
+denich@denich-LOQ-15IRX9:~$ cat /sys/class/net/enp7s0/mtu
+1500
+```
+
+основной проводной интерфейс — enp7s0 (состояние UP, есть MAC-адрес). MTU для него — 1500 байт, стандартное значение для Ethernet. Это подтверждается двумя способами: через ip link show (поле mtu 1500) и через sysfs (/sys/class/net/enp7s0/mtu)
+
 
 
 
