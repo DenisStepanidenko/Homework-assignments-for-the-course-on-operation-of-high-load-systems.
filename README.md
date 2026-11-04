@@ -701,6 +701,68 @@ X-high-load-test: 123\r\n,Host: backend_pool\r\n,Connection: close\r\n,User-Agen
 tshark перехватил HTTP-запросы, которые nginx отправил на backup-сервер 127.0.0.1:8082. В заголовках присутствует X-high-load-test: 123 — nginx проставляет кастомный заголовок при проксировании в апстрим. Заголовок Connection: close — стандартное поведение nginx при работе с upstream по HTTP/1.0, на балансировку не влияет.
 
 
+# Домашнее задание 3. Linux. Архитектура и файловые системы
+
+## Задание 1. Kernel and Module Inspection.
+
+### Шаг 1. Версия ядра
+
+```
+denich@denich-LOQ-15IRX9:~$ uname -a
+Linux denich-LOQ-15IRX9 7.0.0-42-generic #42~24.04.1-Ubuntu SMP PREEMPT_DYNAMIC Mon Oct 19 14:43:01 UTC 2 x86_64 x86_64 x86_64 GNU/Linux
+```
+
+Версия ядра: 7.0.0-42-generic
+
+### Шаг 2. Все загруженные модули ядра
+
+```
+denich@denich-LOQ-15IRX9:~$ lsmod | head -15
+Module                  Size  Used by
+hid_sensor_custom      28672  0
+hid_sensor_hub         28672  1 hid_sensor_custom
+hidp                   40960  0
+nft_reject_ipv4        12288  2
+nf_reject_ipv4         12288  1 nft_reject_ipv4
+nft_reject             12288  1 nft_reject_ipv4
+nft_ct                 28672  1
+nft_masq               12288  1
+nf_nat_h323            24576  0
+nf_conntrack_h323      90112  1 nf_nat_h323
+nf_nat_pptp            16384  0
+nf_conntrack_pptp      24576  1 nf_nat_pptp
+nf_nat_tftp            12288  0
+nf_conntrack_tftp      20480  1 nf_nat_tftp
+```
+
+Полный список большой, поэтому приведены первые 15 строк
+
+### Шаг 3. Отключение автозагрузки модуля cdrom.
+
+```
+denich@denich-LOQ-15IRX9:~$ lsmod | grep cdrom
+denich@denich-LOQ-15IRX9:~$ modinfo cdrom | head -5
+name:           cdrom
+filename:       (builtin)
+license:        GPL
+file:           drivers/cdrom/cdrom
+description:    Uniform CD-ROM driver
+```
+
+Модуль cdrom встроен в ядро (filename: (builtin)) и не отображается в lsmod как загружаемый модуль. Это означает, что он присутствует в ядре постоянно и не может быть выгружен или отключён через modprobe.d — механизм blacklist к нему неприменим
+
+### Шаг 4. Конфигурация ядра и параметр CONFIG_XFS_FS
+
+```
+denich@denich-LOQ-15IRX9:~$ grep CONFIG_XFS_FS /boot/config-$(uname -r)
+CONFIG_XFS_FS=m
+denich@denich-LOQ-15IRX9:~$ zcat /proc/config.gz | grep CONFIG_XFS_FS
+gzip: /proc/config.gz: No such file or directory
+```
+
+Файл конфигурации ядра расположен по пути /boot/config-7.0.0-42-generic. Параметр CONFIG_XFS_FS=m означает, что поддержка файловой системы XFS собрана как загружаемый модуль, а не встроена в ядро. Модуль загружается автоматически при первом монтировании XFS-раздела или вручную через modprobe xfs. Проверка через /proc/config.gz невозможна, так как в ядрах Ubuntu опция CONFIG_IKCONFIG_PROC по умолчанию не включена. Конфигурация ядра успешно получена из файла /boot/config-7.0.0-42-generic, что является штатным способом для данного дистрибутива
+
+
 
 
 
