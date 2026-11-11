@@ -1323,6 +1323,86 @@ RSS (Resident Set Size) — только те страницы, которые �
 Плюс наша строка 'X' * (250 * 1024 * 1024) при создании записывается в память (все байты — 'X'), поэтому страницы «материализуются» и попадают в RSS. Отсюда RSS ≈ 259 MiB: ~250 MiB — наша строка, ~9 MiB — накладные расходы интерпретатора и библиотек.
 
 
+## Задание 4. NUMA и cgroups
 
+### Шаг 1. NUMA-топология
+
+```
+denich@denich-LOQ-15IRX9:~$ numactl --hardware
+available: 1 nodes (0)
+node 0 cpus: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15 16 17 18 19
+node 0 size: 23732 MB
+node 0 free: 12562 MB
+node distances:
+node   0 
+  0:  10
+```
+
+одна NUMA-нода (0), все 20 CPU на ней, 23732 MB памяти
+
+### Шаг 2. Запуск stress с MemoryMax=150M
+
+```
+denich@denich-LOQ-15IRX9:~$ sudo systemd-run --unit=highload-stress-test --slice=testing.slice \
+--property="MemoryMax=150M" \
+--property="CPUWeight=100" \
+stress --cpu 1 --vm 1 --vm-bytes 300M --timeout 30s
+Running as unit: highload-stress-test.service
+```
+
+### Шаг 3. systemd-cgls
+
+```
+denich@denich-LOQ-15IRX9:~$ systemd-cgls /testing.slice
+CGroup /testing.slice:
+└─highload-stress-test.service
+  ├─16101 /usr/bin/stress --cpu 1 --vm 1 --vm-bytes 300M --timeout 30s
+  ├─16102 /usr/bin/stress --cpu 1 --vm 1 --vm-bytes 300M --timeout 30s
+  └─16103 /usr/bin/stress --cpu 1 --vm 1 --vm-bytes 300M --timeout 30s
+```
+
+процессы stress находятся в testing.slice
+
+### Шаг 4. Потребление памяти
+
+```
+denich@denich-LOQ-15IRX9:~$ systemctl status testing.slice --no-pager
+     Memory: 150.1M (peak: 150.3M swap: 300.3M swap peak: 300.3M)
+      Tasks: 3
+```
+
+После завершения:
+
+```
+     Tasks: 0
+     Memory: 332.0K (peak: 150.3M swap: 132.0K swap peak: 300.3M)
+```
+
+### Шаг 5. memory.events
+
+```
+denich@denich-LOQ-15IRX9:~$ cat /sys/fs/cgroup/testing.slice/memory.events
+max 57181
+oom_kill 0
+```
+
+cgroup 57181 раз упиралась в лимит. OOM-kill не сработал — stress завершился по таймауту раньше
+
+Ответы на вопросы:
+
+1) Будет ли работать тест с 300M при лимите 150M?   
+Нет. Cgroup не даёт превысить 150M резидентной памяти. Stress не получит все 300M, будет удерживаться на 150M за счёт reclaim/swap, а при длительном давлении — убит OOM killer.
+
+2) Превысило ли использование памяти 150M?   
+Нет. Peak 150.3M — на уровне лимита. max 57181 подтверждает, что cgroup упиралась в потолок, но не пробивала его.
+
+3) Что происходит с процессом при превышении?   
+Ядро запускает OOM killer и убивает процесс в cgroup. В нашем случае stress завершился по таймауту раньше OOM-kill.
+
+4) Что делает MemoryMax?   
+Жёсткий лимит памяти для cgroup. При достижении — reclaim, затем OOM-kill. Используется для изоляции сервисов и предотвращения OOM всей системы
+
+5) Что делает CPUWeight?   
+Относительный вес CPU при конкуренции (не жёсткий лимит). 100 — значение по умолчанию. Для жёсткого лимита нужен CPUQuota.
 
 
