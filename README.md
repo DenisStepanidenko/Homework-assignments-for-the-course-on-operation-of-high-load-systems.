@@ -1164,6 +1164,109 @@ systemd-analyze blame показывает время, которое кажды
 4) NetworkManager-wait-online.service — 5.9 с (ожидание сети);
 5) docker.service — 4.8 с.
 
+## Задание 2. Межпроцессное взаимодействие (IPC) с разделяемой памятью
+
+### Шаг 1. Создание исходного кода
+
+```
+denich@denich-LOQ-15IRX9:~$ nano ~/shm_creator.c
+```
+
+Содержимое shm_creator.c:
+
+```
+#include <stdio.h>
+#include <stdlib.h>
+#include <sys/ipc.h>
+#include <sys/shm.h>
+#include <unistd.h>
+
+int main() {
+    key_t key = ftok("homework_key", 65);
+    int shmid = shmget(key, 1024, 0666|IPC_CREAT);
+    if (shmid == -1) {
+        perror("shmget");
+        exit(1);
+    }
+    printf("Shared memory segment created.\n");
+    printf("ID: %d\nKey: 0x%x\n", shmid, key);
+    printf("Run 'ipcs -m' to see it. Process will exit in 60 seconds...\n");
+    sleep(60);
+    shmctl(shmid, IPC_RMID, NULL);
+    printf("Shared memory segment removed.\n");
+    return 0;
+}
+```
+
+### Шаг 2. Создание ключевого файла и компиляция
+
+```
+denich@denich-LOQ-15IRX9:~$ touch ~/homework_key
+denich@denich-LOQ-15IRX9:~$ gcc ~/shm_creator.c -o ~/shm_creator
+denich@denich-LOQ-15IRX9:~$ ls -l ~/shm_creator ~/homework_key
+-rw-rw-r-- 1 denich denich     0 Nov 11 20:47 /home/denich/homework_key
+-rwxrwxr-x 1 denich denich 16264 Nov 11 20:47 /home/denich/shm_creator
+```
+
+touch создаёт пустой файл homework_key — он нужен, чтобы ftok мог сгенерировать ключ. gcc компилирует программу, на выходе — исполняемый файл shm_creator (16264 байта, права -rwxrwxr-x)
+
+#### Шаг 3. Запуск программы
+
+```
+denich@denich-LOQ-15IRX9:~$ cd ~ && ./shm_creator &
+[1] 13654
+denich@denich-LOQ-15IRX9:~$ Shared memory segment created.
+ID: 65541
+Key: 0x4105265f
+Run 'ipcs -m' to see it. Process will exit in 60 seconds...
+```
+
+программа запущена в фоне (PID 13654). Создан сегмент с ID: 65541 и Key: 0x4105265f. Размер — 1024 байта. Программа спит 60 секунд, после чего удалит сегмент.
+
+### Шаг 4. Анализ через ipcs -m (пока программа работает)
+
+```
+denich@denich-LOQ-15IRX9:~$ ipcs -m
+
+------ Shared Memory Segments --------
+key        shmid      owner      perms      bytes      nattch     status      
+0x00000000 65536      denich     600        524288     2          dest         
+...
+0x4105265f 65541      denich     666        1024       0                       
+...
+```
+
+в выводе присутствует строка нашего сегмента:
+
+| Поле | Значение | Что означает |
+|------|----------|--------------|
+| key | 0x4105265f | Ключ, сгенерированный `ftok` — совпадает с выводом программы |
+| shmid | 65541 | ID сегмента — совпадает с выводом программы |
+| owner | denich | Владелец — текущий пользователь |
+| perms | 666 | Права `rw-rw-rw-` — как задано в `0666\|IPC_CREAT` |
+| bytes | 1024 | Размер 1 КБ — как задано в `shmget` |
+| nattch | 0 | Number of attached processes — ни один процесс не подключён |
+
+nattch = 0: программа shm_creator только создаёт сегмент через shmget, но не подключается к нему через shmat. Поэтому счётчик nattch остаётся нулевым: сегмент существует в ядре, но ни один процесс не имеет его в своём адресном пространстве. Если бы программа вызывала shmat(shmid, NULL, 0), nattch стал бы 1. Это важное различие между создать сегмент и подключиться к сегменту.
+
+Остальные строки (0x00000000 ... nattch 2 ... dest) — сегменты других процессов (графической среды, браузера), к нашему заданию отношения не имеют
+
+### Шаг 5. Проверка удаления сегмента
+
+```
+denich@denich-LOQ-15IRX9:~$ ipcs -m
+
+------ Shared Memory Segments --------
+key        shmid      owner      perms      bytes      nattch     status      
+0x00000000 65536      denich     600        524288     2          dest         
+...
+(строки с shmid 65541 больше нет)
+```
+
+через 60 секунд программа вызвала shmctl(shmid, IPC_RMID, NULL) и удалила сегмент. В повторном выводе ipcs -m строки с shmid 65541 нет — сегмент корректно очищен. Это подтверждает работу механизма IPC_RMID
+
+
+
 
 
 
