@@ -1042,10 +1042,127 @@ denich@denich-LOQ-15IRX9:~$ cat /sys/class/net/enp7s0/mtu
 основной проводной интерфейс — enp7s0 (состояние UP, есть MAC-адрес). MTU для него — 1500 байт, стандартное значение для Ethernet. Это подтверждается двумя способами: через ip link show (поле mtu 1500) и через sysfs (/sys/class/net/enp7s0/mtu)
 
 
+# Домашнее задание 4. Linux работа с памятью и процессами
 
+## Задание 1. Systemd
 
+### Шаг 1. Создание bash-скрипта /usr/local/bin/homework_service.sh
 
+```
+denich@denich-LOQ-15IRX9:~$ sudo nano /usr/local/bin/homework_service.sh
+denich@denich-LOQ-15IRX9:~$ sudo chmod +x /usr/local/bin/homework_service.sh
+denich@denich-LOQ-15IRX9:~$ cat /usr/local/bin/homework_service.sh
+#!/bin/bash
+echo "My custom service has started."
+while true; do
+  echo "Service heartbeat: $(date)" >> /tmp/homework_service.log
+  sleep 15
+done
+denich@denich-LOQ-15IRX9:~$ ls -l /usr/local/bin/homework_service.sh
+-rwxr-xr-x 1 root root 146 Nov 11 20:37 /usr/local/bin/homework_service.sh
+```
+Скрипт создан, сделан исполняемым, права -rwxr-xr-x подтверждают это. Скрипт выводит приветствие и в бесконечном цикле пишет heartbeat в /tmp/homework_service.log каждые 15 секунд.
 
+### Шаг 2. Создание systemd unit-файла
+
+```
+denich@denich-LOQ-15IRX9:~$ sudo nano /etc/systemd/system/homework_service.service
+denich@denich-LOQ-15IRX9:~$ cat /etc/systemd/system/homework_service.service
+[Unit]
+Description=Homework custom service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/local/bin/homework_service.sh
+Restart=on-failure
+RestartSec=15
+
+[Install]
+WantedBy=multi-user.target
+```
+unit-файл размещён в /etc/systemd/system/ — это стандартное место для администраторских unit'ов, которое не затирается обновлениями пакетов. Restart=on-failure указывает systemd перезапускать сервис при падении, RestartSec=15 — через 15 секунд. WantedBy=multi-user.target означает, что сервис будет автоматически запускаться при загрузке системы
+
+### Шаг 3. Запуск сервиса и проверка работы
+
+```
+denich@denich-LOQ-15IRX9:~$ sudo systemctl daemon-reload
+denich@denich-LOQ-15IRX9:~$ sudo systemctl enable homework_service
+Created symlink /etc/systemd/system/multi-user.target.wants/homework_service.service → /etc/systemd/system/homework_service.service.
+denich@denich-LOQ-15IRX9:~$ sudo systemctl start homework_service
+denich@denich-LOQ-15IRX9:~$ sudo systemctl status homework_service --no-pager
+● homework_service.service - Homework custom service
+     Loaded: loaded (/etc/systemd/system/homework_service.service; enabled; preset: enabled)
+     Active: active (running) since Wed 2026-11-11 20:38:47 MSK; 3s ago
+   Main PID: 13327 (homework_servic)
+      Tasks: 2 (limit: 25041)
+     Memory: 664.0K (peak: 1.2M)
+        CPU: 7ms
+     CGroup: /system.slice/homework_service.service
+             ├─13327 /bin/bash /usr/local/bin/homework_service.sh
+             └─13329 sleep 15
+
+Nov 11 20:38:47 denich-LOQ-15IRX9 systemd[1]: Started homework_service.servi…ce.
+Nov 11 20:38:47 denich-LOQ-15IRX9 homework_service.sh[13327]: My custom servi…d.
+```
+
+daemon-reload перечитывает unit-файлы. enable создаёт симлинк для автозапуска при загрузке. status показывает: сервис active, Main PID: 13327, процесс /bin/bash /usr/local/bin/homework_service.sh и его дочерний sleep 15. Вывод «My custom service has started.» подтверждает, что скрипт стартовал
+
+### Шаг 4. Проверка записи в лог
+
+```
+denich@denich-LOQ-15IRX9:~$ sleep 5
+denich@denich-LOQ-15IRX9:~$ cat /tmp/homework_service.log
+Service heartbeat: Wed Nov 11 08:38:47 PM MSK 2026
+Service heartbeat: Wed Nov 11 08:39:02 PM MSK 2026
+```
+
+в логе две записи с интервалом 15 секунд (20:38:47 и 20:39:02) — скрипт работает в цикле и пишет heartbeat каждые 15 секунд, как задано
+
+### Шаг 5. Проверка автоперезапуска при падении
+
+```
+denich@denich-LOQ-15IRX9:~$ sudo systemctl show homework_service -p MainPID
+MainPID=13327
+denich@denich-LOQ-15IRX9:~$ sudo kill -9 13327
+denich@denich-LOQ-15IRX9:~$ sleep 20
+denich@denich-LOQ-15IRX9:~$ sudo systemctl status homework_service --no-pager
+● homework_service.service - Homework custom service
+     Loaded: loaded (/etc/systemd/system/homework_service.service; enabled; preset: enabled)
+     Active: active (running) since Wed 2026-11-11 20:39:44 MSK; 11s ago
+   Main PID: 13501 (homework_servic)
+      Tasks: 2 (limit: 25041)
+     Memory: 584.0K (peak: 1.5M)
+        CPU: 6ms
+     CGroup: /system.slice/homework_service.service
+             ├─13501 /bin/bash /usr/local/bin/homework_service.sh
+             └─13503 sleep 15
+
+Nov 11 20:39:44 denich-LOQ-15IRX9 systemd[1]: homework_service.service: Sche… 1.
+Nov 11 20:39:44 denich-LOQ-15IRX9 systemd[1]: Started homework_service.servi…ce.
+Nov 11 20:39:44 denich-LOQ-15IRX9 homework_service.sh[13501]: My custom servi…d.
+```
+
+После kill -9 13327 сервис упал. Systemd, согласно Restart=on-failure и RestartSec=15, перезапустил его через 15 секунд: Main PID сменился с 13327 на 13501, статус снова active, в логе systemd появилась запись Scheduled restart job (обрезано как Sche… 1). Это доказывает, что автоперезапуск работает
+
+### Шаг 6. Топ-5 unit'ов по времени старта
+
+```
+denich@denich-LOQ-15IRX9:~$ systemd-analyze blame | head -5
+6min 32.985s apt-daily-upgrade.service
+     15.219s homework_service.service
+     11.385s plymouth-quit-wait.service
+      5.873s NetworkManager-wait-online.service
+      4.751s docker.service
+```
+
+systemd-analyze blame показывает время, которое каждый unit потратил на инициализацию при загрузке. Топ-5:
+
+1) apt-daily-upgrade.service — 6 мин 33 с (обновления пакетов, самый долгий);
+2) homework_service.service — 15.2 с (наш сервис);
+3) plymouth-quit-wait.service — 11.4 с (загрузочная заставка);
+4) NetworkManager-wait-online.service — 5.9 с (ожидание сети);
+5) docker.service — 4.8 с.
 
 
 
